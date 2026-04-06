@@ -3,46 +3,123 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG
+from pathlib import Path
 
-from isaaclab.assets import ArticulationCfg
+import isaaclab.sim as sim_utils
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg
 from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
+from isaaclab.sensors import CameraCfg, FrameTransformerCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
+from isaaclab.markers import FRAME_MARKER_CFG
+from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils import configclass
 
+from digital_twin.tasks.robots import JETCOBOT_CFG
+
+ASSET_DIR = Path.cwd() / "assets"
+
+# ── FrameTransformer visualiser ─────────────────────────────────────────
+_MARKER_CFG = FRAME_MARKER_CFG.copy()
+_MARKER_CFG.markers["frame"].scale = (0.05, 0.05, 0.05)
+_MARKER_CFG.prim_path = "/Visuals/FrameTransformer"
 
 @configclass
 class DigitalTwinEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 5.0
-    # - spaces definition
-    action_space = 1
-    observation_space = 4
+    episode_length_s = 10.0
+    # spaces definition
+    # action_space  : EE delta pos (3) + 1 gripper (open/close) = 4
+    # observation_space: EE pos (3) + object pos (3) + arm joints (6) + gripper (1) = 13
+    action_space = 7
+    observation_space = 25
     state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
 
     # robot(s)
-    robot_cfg: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot_cfg: ArticulationCfg = JETCOBOT_CFG.replace(
+        prim_path="/World/envs/env_.*/Robot",
+        init_state=ArticulationCfg.InitialStateCfg(  
+                pos=(-0.21786, 0.48402, 0.73747),
+                rot=(0.7071, 0, 0, -0.7071),
+                joint_pos={  
+                    "Joint_1": 0.0,
+                    "Joint_2": -0.757,      
+                    "Joint_3": -0.678,  
+                    "Joint_4": 0.0,  
+                    "Joint_5": 0.0,  
+                    "Joint_6": 0.0,  
+                    "gripper_controller": -0.422,  
+                }
+            )
+        )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=4.0, replicate_physics=True)
 
-    # custom parameters/scales
-    # - controllable joint
-    cart_dof_name = "slider_to_cart"
-    pole_dof_name = "cart_to_pole"
-    # - action scale
-    action_scale = 100.0  # [N]
-    # - reward scales
-    rew_scale_alive = 1.0
-    rew_scale_terminated = -2.0
-    rew_scale_pole_pos = -1.0
-    rew_scale_cart_vel = -0.01
-    rew_scale_pole_vel = -0.005
-    # - reset states/conditions
-    initial_pole_angle_range = [-0.25, 0.25]  # pole angle sample range on reset [rad]
-    max_cart_pos = 3.0  # reset if cart exceeds this position [m]
+    # end-effector frame transformer (true EE = Link_6 + offset)
+    ee_frame: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/jetcobot/base_link",
+        debug_vis=True,
+        visualizer_cfg=_MARKER_CFG,
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path="/World/envs/env_.*/Robot/jetcobot/Link_6",
+                name="end_effector",
+                offset=OffsetCfg(
+                    pos=[0.12374, 0.0, 0.01131],
+                ),
+            ),
+        ],
+    )
+
+    # USD paths
+    env_usd: str = str(ASSET_DIR / "lab_flatten.usd")
+
+    # Cube config
+    cube_properties = RigidBodyPropertiesCfg(
+            solver_position_iteration_count=16,
+            solver_velocity_iteration_count=1,
+            max_angular_velocity=1000.0,
+            max_linear_velocity=1000.0,
+            max_depenetration_velocity=5.0,
+            disable_gravity=False,
+        )
+    
+    object_cfg: str = RigidObjectCfg(
+            prim_path="/World/envs/env_.*/Cube",
+            init_state=RigidObjectCfg.InitialStateCfg
+                (pos=[-0.2216, 0.30368, 0.8], rot=[1, 0, 0, 0]),
+            spawn=UsdFileCfg(
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/blue_block.usd",
+                scale=(0.3, 0.3, 0.3),
+                rigid_props=cube_properties,
+                semantic_tags=[("class", "cube_1")],
+            ),
+        )
+
+    # camera     
+    # camera_cfg: CameraCfg = CameraCfg(
+    #     prim_path="/World/envs/env_.*/Camera",
+    #     offset=CameraCfg.OffsetCfg(
+    #         pos=(-0.22963, -0.01376, 1.03289), 
+    #         rot=(0.8655, 0.4997, -0.01745, 0.03022), 
+    #         convention="opengl"),
+    #     data_types=["rgb"],
+    #     spawn=sim_utils.PinholeCameraCfg(  
+    #         focal_length=18.14756,
+    #         focus_distance=400.0,
+    #         horizontal_aperture=36.294, # Horizontal FOV ~ 90 degrees
+    #         vertical_aperture=20.415, # Vertical FOV ~ 59 degrees
+    #         clipping_range=(0.1, 20.0)  
+    #     ),  
+    #     width=320,
+    #     height=240,
+    # )
+   
