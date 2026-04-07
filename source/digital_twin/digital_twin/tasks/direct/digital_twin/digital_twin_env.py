@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
+import gymnasium as gym
 import torch
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.sensors import TiledCamera, FrameTransformer
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import sample_uniform, subtract_frame_transforms
+from isaaclab.utils.math import sample_uniform
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 
 from .digital_twin_env_cfg import DigitalTwinEnvCfg
@@ -24,6 +26,14 @@ class DigitalTwinEnv(DirectRLEnv):
 
     def __init__(self, cfg: DigitalTwinEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        # ── Override observation space: vector(19) + pixels_flat(3*128*128) ──
+        self._vec_obs_dim = 19
+        self._pixel_flat_dim = 3 * 128 * 128
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf,
+            shape=(self._vec_obs_dim + self._pixel_flat_dim,), dtype=np.float32,
+        )
 
         # ── Joint indices ────────────────────────────────────────────────────
         arm_ids, _ = self.robot.find_joints(
@@ -79,10 +89,10 @@ class DigitalTwinEnv(DirectRLEnv):
         env.func(prim_path="/World/envs/env_.*/scene", cfg=env)
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        # self.camera = TiledCamera(self.cfg.camera_cfg)
+        self.camera = TiledCamera(self.cfg.camera_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
 
-        # self.scene.sensors["camera"] = self.camera
+        self.scene.sensors["camera"] = self.camera
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["object"] = self.object
         self.ee_frame = FrameTransformer(self.cfg.ee_frame)
@@ -152,19 +162,7 @@ class DigitalTwinEnv(DirectRLEnv):
     # ── Observation ──────────────────────────────────────────────────────────
 
     def _get_observations(self) -> dict:
-        # Robot root pose (for frame transforms)
-        robot_pos_w  = self.robot.data.root_pos_w   # (N, 3)
-        robot_quat_w = self.robot.data.root_quat_w  # (N, 4)
-
-        # Object position in robot root frame (same as Isaac Lab lift mdp)
-        obj_pos_w = self.object.data.root_pos_w     # (N, 3)
-        obj_pos_b, _ = subtract_frame_transforms(robot_pos_w, robot_quat_w, obj_pos_w)  # (N, 3)
-
-        # EE position in robot root frame
-        ee_pos_w = self.ee_frame.data.target_pos_w[:, 0, :]              # (N, 3)
-        ee_pos_b, _ = subtract_frame_transforms(robot_pos_w, robot_quat_w, ee_pos_w)    # (N, 3)
-
-        # joint pos relative to default, joint vel relative to default
+        # joint pos/vel relative to default
         joint_pos_rel = (
             self.robot.data.joint_pos[:, self._arm_joint_ids]
             - self.robot.data.default_joint_pos[:, self._arm_joint_ids]
@@ -174,9 +172,16 @@ class DigitalTwinEnv(DirectRLEnv):
             - self.robot.data.default_joint_vel[:, self._arm_joint_ids]
         )  # (N, 6)
 
-        # obs = [joint_pos_rel (6), joint_vel_rel (6), obj_pos_b (3), ee_pos_b (3), last_action (4)] = 22
-        obs = torch.cat([joint_pos_rel, joint_vel_rel, obj_pos_b, ee_pos_b, self._prev_actions], dim=-1)
-        return {"policy": obs}
+        # vector obs: [joint_pos_rel (6), joint_vel_rel (6), prev_actions (7)] = 19
+        vec_obs = torch.cat([joint_pos_rel, joint_vel_rel, self._prev_actions], dim=-1)
+
+        # image obs: (N, H, W, 4) uint8 → flatten to (N, 3*128*128)
+        rgb = self.camera.data.output["rgb"]  # (N, H, W, 4) RGBA uint8
+        pixels = rgb[..., :3].float() / 255.0  # (N, H, W, 3)
+        pixels_flat = pixels.permute(0, 3, 1, 2).reshape(pixels.shape[0], -1)  # (N, 49152)
+
+        # concat: [vec_obs (19), pixels_flat (49152)]
+        return {"policy": torch.cat([vec_obs, pixels_flat], dim=-1)}
 
     # ── Reward ───────────────────────────────────────────────────────────────
 

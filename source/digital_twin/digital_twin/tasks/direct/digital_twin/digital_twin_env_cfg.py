@@ -36,7 +36,7 @@ class DigitalTwinEnvCfg(DirectRLEnvCfg):
     # action_space  : EE delta pos (3) + 1 gripper (open/close) = 4
     # observation_space: EE pos (3) + object pos (3) + arm joints (6) + gripper (1) = 13
     action_space = 7
-    observation_space = 25
+    observation_space = 49171  # vec(19) + pixels_flat(3*128*128=49152)
     state_space = 0
 
     # simulation
@@ -104,22 +104,22 @@ class DigitalTwinEnvCfg(DirectRLEnvCfg):
             ),
         )
 
-    # camera     
-    # camera_cfg: CameraCfg = CameraCfg(
-    #     prim_path="/World/envs/env_.*/Camera",
-    #     offset=CameraCfg.OffsetCfg(
-    #         pos=(-0.22963, -0.01376, 1.03289), 
-    #         rot=(0.8655, 0.4997, -0.01745, 0.03022), 
-    #         convention="opengl"),
-    #     data_types=["rgb"],
-    #     spawn=sim_utils.PinholeCameraCfg(  
-    #         focal_length=18.14756,
-    #         focus_distance=400.0,
-    #         horizontal_aperture=36.294, # Horizontal FOV ~ 90 degrees
-    #         vertical_aperture=20.415, # Vertical FOV ~ 59 degrees
-    #         clipping_range=(0.1, 20.0)  
-    #     ),  
-    #     width=320,
-    #     height=240,
-    # )
+    # camera
+    camera_cfg: CameraCfg = CameraCfg(
+        prim_path="/World/envs/env_.*/Camera",
+        offset=CameraCfg.OffsetCfg(
+            pos=(-0.22963, -0.01376, 1.03289),
+            rot=(0.8655, 0.4997, -0.01745, 0.03022),
+            convention="opengl"),
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=18.14756,
+            focus_distance=400.0,
+            horizontal_aperture=36.294,
+            vertical_aperture=20.415,
+            clipping_range=(0.1, 20.0)
+        ),
+        width=128,
+        height=128,
+    )
    
